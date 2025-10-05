@@ -38,3 +38,4 @@ log/*
 !example/image.png
 
 .env
+.venv
