@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pydantic
+websockets
+numpy
+scipy
+soundfile
+librosa
+torch
+torchvision
+torchaudio
+opencv-python-headless
+scikit-image
+tqdm
+gradio
