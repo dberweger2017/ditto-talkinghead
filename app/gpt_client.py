@@ -117,6 +117,7 @@ class GPTRealtimeClient:
             "type": "response.create",
             "response": {
                 "modalities": ["text", "audio"],
+                "audio": {"voice": "verse"},
             },
         }
         if instructions:
@@ -144,7 +145,7 @@ class GPTRealtimeClient:
                     "input_audio_format": "pcm16",
                     "input_audio_sample_rate": 16000,
                     "voice": "verse",
-                    "turn_detection": {"type": "none"},
+                    "turn_detection": None,
                 },
             }
         )
@@ -207,6 +208,14 @@ class GPTRealtimeClient:
         if event.get("type") == "input_audio_buffer.committed":
             self._logger.debug("Upstream acknowledged audio commit; clearing pending flag")
             self._has_pending_audio = False
+        if event.get("type") == "response.audio.delta" and "delta" in event:
+            self._logger.debug("Decoding JSON audio delta")
+            await self._emit_remote_event(
+                {
+                    "type": "audio.chunk",
+                    "data": event["delta"],
+                }
+            )
         await self._emit_remote_event(event)
 
     async def _handle_binary_message(self, payload: bytes) -> None:

@@ -17,7 +17,9 @@ class Session:
     session_id: str
     client: GPTRealtimeClient
     event_task: asyncio.Task[None]
-    event_queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
+    event_queue: asyncio.Queue[dict[str, Any]] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=2000)
+    )
     avatar_session: BaseAvatarSession | None = None
     created_at: float = field(default_factory=lambda: asyncio.get_event_loop().time())
 
