@@ -24,6 +24,7 @@ class GPTRealtimeClient:
         self._ws: WebSocketClientProtocol | None = None
         self._receiver_task: asyncio.Task[None] | None = None
         self._logger = logging.getLogger("ditto.gpt")
+        self._has_pending_audio = False
 
     async def __aenter__(self) -> "GPTRealtimeClient":
         await self.connect()
@@ -96,12 +97,19 @@ class GPTRealtimeClient:
         self._logger.debug("Sending audio chunk bytes=%d chunk_id=%s", len(pcm16), chunk_id)
         await self._send_json(payload)
         await self._emit_local_event({"event": "audio_chunk_sent", "chunk_id": chunk_id})
+        self._has_pending_audio = True
 
-    async def commit_input(self) -> None:
+    async def commit_input(self) -> bool:
         await self._connected.wait()
+        if not self._has_pending_audio:
+            self._logger.info("No pending audio to commit; skipping")
+            await self._emit_local_event({"event": "input_commit_skipped"})
+            return False
         self._logger.info("Committing input audio buffer")
         await self._send_json({"type": "input_audio_buffer.commit"})
         await self._emit_local_event({"event": "input_committed"})
+        self._has_pending_audio = False
+        return True
 
     async def request_response(self, *, instructions: str | None = None) -> None:
         await self._connected.wait()
@@ -136,6 +144,7 @@ class GPTRealtimeClient:
                     "input_audio_format": "pcm16",
                     "input_audio_sample_rate": 16000,
                     "voice": "verse",
+                    "turn_detection": {"type": "none"},
                 },
             }
         )
@@ -195,6 +204,9 @@ class GPTRealtimeClient:
             )
             return
         self._logger.debug("Received realtime JSON event type=%s", event.get("type"))
+        if event.get("type") == "input_audio_buffer.committed":
+            self._logger.debug("Upstream acknowledged audio commit; clearing pending flag")
+            self._has_pending_audio = False
         await self._emit_remote_event(event)
 
     async def _handle_binary_message(self, payload: bytes) -> None:

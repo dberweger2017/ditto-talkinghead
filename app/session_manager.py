@@ -65,7 +65,10 @@ class SessionManager:
     async def commit(self, session_id: str, *, instructions: str | None = None) -> None:
         session = await self._get_session(session_id)
         self._logger.info("Session %s commit (instructions=%s)", session_id, instructions)
-        await session.client.commit_input()
+        committed = await session.client.commit_input()
+        if not committed:
+            self._logger.info("Session %s commit skipped (no pending audio)", session_id)
+            return
         await session.client.request_response(instructions=instructions)
 
     async def request_response(self, session_id: str, *, instructions: str | None = None) -> None:
