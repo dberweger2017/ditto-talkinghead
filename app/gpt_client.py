@@ -117,7 +117,6 @@ class GPTRealtimeClient:
             "type": "response.create",
             "response": {
                 "modalities": ["text", "audio"],
-                "audio": {"voice": "verse"},
             },
         }
         if instructions:
