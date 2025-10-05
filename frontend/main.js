@@ -372,6 +372,12 @@ function handleBackendMessage(raw) {
       }
       break;
     }
+    case 'audio.chunk': {
+      if (event.data) {
+        queuePlaybackFromBase64(event.data);
+      }
+      break;
+    }
     case 'response.audio_transcript.delta': {
       const delta =
         event.delta ?? event.text ?? event.transcript ?? event.content ?? '';
@@ -398,10 +404,17 @@ function handleBackendMessage(raw) {
         websocket.send(JSON.stringify({ type: 'close' }));
       }
       break;
-    case 'invalid_request_error':
+    case 'invalid_request_error': {
+      const code = event.code ?? '';
+      if (code === 'input_audio_buffer_commit_empty') {
+        appendLog('event', 'No pending audio to commit; response already underway');
+        setStatus('Model already responding');
+        break;
+      }
       appendLog('error', JSON.stringify(event));
       setStatus(event.message ?? 'Invalid request');
       break;
+    }
     case 'error':
       appendLog('error', JSON.stringify(event.error ?? event));
       setStatus('Error received from backend');
