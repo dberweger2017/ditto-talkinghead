@@ -156,6 +156,7 @@ async function stopStreaming() {
 
   appendLog('client', 'Stopping capture and committing request');
   stopAudioCapture();
+  flushPendingSamples();
   const payload = { type: 'commit' };
   const instructions = instructionsEl.value.trim();
   if (instructions) {
@@ -294,6 +295,18 @@ function floatTo16BitPCM(float32Array) {
   return buffer;
 }
 
+function flushPendingSamples() {
+  if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  if (sampleAccumulator.length === 0) {
+    return;
+  }
+  const pcm = floatTo16BitPCM(sampleAccumulator);
+  websocket.send(pcm);
+  sampleAccumulator = new Float32Array(0);
+}
+
 function downsampleBuffer(buffer, inSampleRate, outSampleRate) {
   if (!buffer || inSampleRate === outSampleRate) {
     return buffer;
@@ -352,6 +365,26 @@ function handleBackendMessage(raw) {
       }
       break;
     }
+    case 'response.audio.delta': {
+      const base64Audio = event.delta ?? event.audio ?? event.audio_base64;
+      if (base64Audio) {
+        queuePlaybackFromBase64(base64Audio);
+      }
+      break;
+    }
+    case 'response.audio_transcript.delta': {
+      const delta =
+        event.delta ?? event.text ?? event.transcript ?? event.content ?? '';
+      transcriptBuffer += delta;
+      updateTranscript();
+      break;
+    }
+    case 'response.audio_transcript.done':
+      appendLog('event', 'Audio transcript complete');
+      break;
+    case 'response.audio.done':
+      appendLog('event', 'Audio stream complete');
+      break;
     case 'binary.delta':
       if (event.data) {
         queuePlaybackFromBase64(event.data);
@@ -364,6 +397,10 @@ function handleBackendMessage(raw) {
       if (websocket && websocket.readyState === WebSocket.OPEN) {
         websocket.send(JSON.stringify({ type: 'close' }));
       }
+      break;
+    case 'invalid_request_error':
+      appendLog('error', JSON.stringify(event));
+      setStatus(event.message ?? 'Invalid request');
       break;
     case 'error':
       appendLog('error', JSON.stringify(event.error ?? event));
