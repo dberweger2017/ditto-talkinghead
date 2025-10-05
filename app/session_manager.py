@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from .config import get_settings
 from .gpt_client import GPTRealtimeClient
+from .avatar_engine import AvatarEngine, BaseAvatarSession
 
 
 @dataclass
@@ -16,6 +17,7 @@ class Session:
     client: GPTRealtimeClient
     event_task: asyncio.Task[None]
     event_queue: asyncio.Queue[dict[str, Any]] = field(default_factory=asyncio.Queue)
+    avatar_session: BaseAvatarSession | None = None
     created_at: float = field(default_factory=lambda: asyncio.get_event_loop().time())
 
 
@@ -24,24 +26,30 @@ class SessionManager:
         self._sessions: Dict[str, Session] = {}
         self._settings = get_settings()
         self._lock = asyncio.Lock()
+        self._avatar_engine = AvatarEngine()
 
     async def create_session(self) -> str:
         async with self._lock:
             if len(self._sessions) >= self._settings.max_sessions:
                 raise RuntimeError("Session limit exceeded")
 
+            if not self._settings.openai_api_key:
+                raise RuntimeError("OPENAI_API_KEY is not configured")
+
             session_id = uuid.uuid4().hex
             client = GPTRealtimeClient(
-                api_key=self._settings.openai_api_key or "",
+                api_key=self._settings.openai_api_key,
                 model=self._settings.openai_realtime_model,
             )
             await client.connect()
+            avatar_session = await self._avatar_engine.create_session(session_id)
 
             event_task = asyncio.create_task(self._pipe_events(session_id, client))
             self._sessions[session_id] = Session(
                 session_id=session_id,
                 client=client,
                 event_task=event_task,
+                avatar_session=avatar_session,
             )
             return session_id
 
@@ -49,10 +57,14 @@ class SessionManager:
         session = await self._get_session(session_id)
         await session.client.send_audio_chunk(pcm16)
 
-    async def commit(self, session_id: str) -> None:
+    async def commit(self, session_id: str, *, instructions: str | None = None) -> None:
         session = await self._get_session(session_id)
         await session.client.commit_input()
-        await session.client.request_response()
+        await session.client.request_response(instructions=instructions)
+
+    async def request_response(self, session_id: str, *, instructions: str | None = None) -> None:
+        session = await self._get_session(session_id)
+        await session.client.request_response(instructions=instructions)
 
     async def close_session(self, session_id: str) -> None:
         async with self._lock:
@@ -61,6 +73,12 @@ class SessionManager:
             return
         session.event_task.cancel()
         await session.client.close()
+        avatar_session = session.avatar_session
+        if avatar_session is not None:
+            try:
+                await avatar_session.finalize()
+            except Exception:
+                pass
         try:
             await session.event_task
         except asyncio.CancelledError:
