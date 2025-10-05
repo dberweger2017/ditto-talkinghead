@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import logging
 from typing import Any, AsyncGenerator
@@ -43,13 +44,16 @@ class GPTRealtimeClient:
             "OpenAI-Beta": "realtime=v1",
         }
 
+        connect_signature = inspect.signature(websockets.connect)
+        header_kwarg = "extra_headers" if "extra_headers" in connect_signature.parameters else "additional_headers"
+
         try:
             self._ws = await websockets.connect(
                 url,
-                extra_headers=headers,
                 max_size=16 * 1024 * 1024,
                 ping_interval=20,
                 ping_timeout=20,
+                **{header_kwarg: headers},
             )
         except Exception as exc:  # pragma: no cover - network boundary
             raise RuntimeError("Failed to connect to OpenAI realtime endpoint") from exc
