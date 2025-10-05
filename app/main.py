@@ -14,16 +14,26 @@ from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .config import get_settings
 from .session_manager import SessionManager
+
+settings = get_settings()
+
+root_logger = logging.getLogger("ditto")
+if not root_logger.handlers:
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    )
+    root_logger.addHandler(stream_handler)
+
+log_level_name = settings.log_level.upper()
+log_level = getattr(logging, log_level_name, logging.INFO)
+root_logger.setLevel(log_level)
 
 app = FastAPI(title="Realtime Ditto Backend")
 sessions = SessionManager()
-logger = logging.getLogger("ditto.realtime")
-if not logger.handlers:
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-    logger.addHandler(stream_handler)
-logger.setLevel(logging.DEBUG)
+logger = root_logger.getChild("realtime")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 if FRONTEND_DIR.exists():

@@ -16,6 +16,7 @@ class Settings(BaseSettings):
         default="gpt-4o-realtime-preview-2024-12-17",
         env="OPENAI_REALTIME_MODEL",
     )
+    log_level: str = Field(default="INFO", env="DITTO_LOG_LEVEL")
     session_timeout_seconds: int = Field(default=600, env="SESSION_TIMEOUT_SECONDS")
     max_sessions: int = Field(default=4, env="MAX_SESSIONS")
     ditto_cfg_pkl: str | None = Field(default=None, env="DITTO_CFG_PKL")
