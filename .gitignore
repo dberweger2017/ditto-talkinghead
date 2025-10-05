@@ -36,3 +36,5 @@ log/*
 
 !example/audio.wav
 !example/image.png
+
+.env
