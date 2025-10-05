@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any, Dict
@@ -27,6 +28,7 @@ class SessionManager:
         self._settings = get_settings()
         self._lock = asyncio.Lock()
         self._avatar_engine = AvatarEngine()
+        self._logger = logging.getLogger("ditto.session")
 
     async def create_session(self) -> str:
         async with self._lock:
@@ -37,6 +39,7 @@ class SessionManager:
                 raise RuntimeError("OPENAI_API_KEY is not configured")
 
             session_id = uuid.uuid4().hex
+            self._logger.info("Creating session %s", session_id)
             client = GPTRealtimeClient(
                 api_key=self._settings.openai_api_key,
                 model=self._settings.openai_realtime_model,
@@ -51,19 +54,23 @@ class SessionManager:
                 event_task=event_task,
                 avatar_session=avatar_session,
             )
+            self._logger.info("Session %s created", session_id)
             return session_id
 
     async def append_audio(self, session_id: str, pcm16: bytes) -> None:
         session = await self._get_session(session_id)
+        self._logger.debug("Session %s append_audio len=%d", session_id, len(pcm16))
         await session.client.send_audio_chunk(pcm16)
 
     async def commit(self, session_id: str, *, instructions: str | None = None) -> None:
         session = await self._get_session(session_id)
+        self._logger.info("Session %s commit (instructions=%s)", session_id, instructions)
         await session.client.commit_input()
         await session.client.request_response(instructions=instructions)
 
     async def request_response(self, session_id: str, *, instructions: str | None = None) -> None:
         session = await self._get_session(session_id)
+        self._logger.info("Session %s response requested (instructions=%s)", session_id, instructions)
         await session.client.request_response(instructions=instructions)
 
     async def close_session(self, session_id: str) -> None:
@@ -71,6 +78,7 @@ class SessionManager:
             session = self._sessions.pop(session_id, None)
         if session is None:
             return
+        self._logger.info("Closing session %s", session_id)
         session.event_task.cancel()
         await session.client.close()
         avatar_session = session.avatar_session
@@ -86,6 +94,7 @@ class SessionManager:
 
     async def stream_events(self, session_id: str) -> AsyncGenerator[dict[str, Any], None]:
         session = await self._get_session(session_id)
+        self._logger.debug("Streaming events for session %s", session_id)
         while True:
             event = await session.event_queue.get()
             yield event
@@ -102,8 +111,11 @@ class SessionManager:
         try:
             async for event in client.stream_events():
                 session = await self._get_session(session_id)
+                self._logger.debug("Session %s upstream event %s", session_id, event.get("type"))
                 await session.event_queue.put(event)
         except asyncio.CancelledError:
+            self._logger.debug("Event pipe cancelled for session %s", session_id)
             pass
         except KeyError:
+            self._logger.debug("Event pipe terminating, session %s missing", session_id)
             pass

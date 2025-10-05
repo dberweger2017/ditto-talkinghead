@@ -23,7 +23,7 @@ class GPTRealtimeClient:
         self._sender_lock = asyncio.Lock()
         self._ws: WebSocketClientProtocol | None = None
         self._receiver_task: asyncio.Task[None] | None = None
-        self._logger = logging.getLogger(__name__)
+        self._logger = logging.getLogger("ditto.gpt")
 
     async def __aenter__(self) -> "GPTRealtimeClient":
         await self.connect()
@@ -39,6 +39,7 @@ class GPTRealtimeClient:
             raise RuntimeError("OPENAI_API_KEY is required for realtime streaming")
 
         url = f"wss://api.openai.com/v1/realtime?model={self.model}"
+        self._logger.info("Connecting to OpenAI realtime endpoint %s", url)
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "OpenAI-Beta": "realtime=v1",
@@ -56,15 +57,18 @@ class GPTRealtimeClient:
                 **{header_kwarg: headers},
             )
         except Exception as exc:  # pragma: no cover - network boundary
+            self._logger.error("Realtime connection handshake failed", exc_info=True)
             raise RuntimeError("Failed to connect to OpenAI realtime endpoint") from exc
 
         self._receiver_task = asyncio.create_task(self._receiver_loop())
         self._connected.set()
+        self._logger.info("Realtime websocket connected; sending session.update")
         await self._initialize_session()
 
     async def close(self) -> None:
         if not self._connected.is_set():
             return
+        self._logger.info("Closing realtime websocket")
         self._connected.clear()
         if self._receiver_task:
             self._receiver_task.cancel()
@@ -89,11 +93,13 @@ class GPTRealtimeClient:
         }
         if chunk_id is not None:
             payload["chunk_id"] = chunk_id
+        self._logger.debug("Sending audio chunk bytes=%d chunk_id=%s", len(pcm16), chunk_id)
         await self._send_json(payload)
         await self._emit_local_event({"event": "audio_chunk_sent", "chunk_id": chunk_id})
 
     async def commit_input(self) -> None:
         await self._connected.wait()
+        self._logger.info("Committing input audio buffer")
         await self._send_json({"type": "input_audio_buffer.commit"})
         await self._emit_local_event({"event": "input_committed"})
 
@@ -107,6 +113,7 @@ class GPTRealtimeClient:
         }
         if instructions:
             payload["response"]["instructions"] = instructions
+        self._logger.info("Requesting response (instructions=%s)", instructions)
         await self._send_json(payload)
         await self._emit_local_event({"event": "response_requested", "payload": payload})
 
@@ -132,12 +139,14 @@ class GPTRealtimeClient:
                 },
             }
         )
+        self._logger.debug("session.update dispatched")
 
     async def _send_json(self, payload: dict[str, Any]) -> None:
         if self._ws is None:
             raise RuntimeError("Realtime client is not connected")
         message = json.dumps(payload)
         async with self._sender_lock:
+            self._logger.debug("Sending JSON payload type=%s", payload.get("type"))
             await self._ws.send(message)
 
     async def _receiver_loop(self) -> None:
@@ -151,6 +160,7 @@ class GPTRealtimeClient:
         except asyncio.CancelledError:
             raise
         except ConnectionClosed as exc:  # pragma: no cover - network
+            self._logger.info("Realtime websocket closed by server code=%s reason=%s", exc.code, exc.reason)
             await self._emit_remote_event(
                 {
                     "type": "connection.closed",
@@ -184,9 +194,11 @@ class GPTRealtimeClient:
                 }
             )
             return
+        self._logger.debug("Received realtime JSON event type=%s", event.get("type"))
         await self._emit_remote_event(event)
 
     async def _handle_binary_message(self, payload: bytes) -> None:
+        self._logger.debug("Received realtime binary payload len=%d", len(payload))
         await self._emit_remote_event(
             {
                 "type": "binary.delta",
@@ -195,4 +207,5 @@ class GPTRealtimeClient:
         )
 
     async def _emit_remote_event(self, event: dict[str, Any]) -> None:
+        self._logger.debug("Queueing remote event type=%s", event.get("type"))
         await self._receive_queue.put(event)

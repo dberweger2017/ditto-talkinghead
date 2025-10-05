@@ -18,7 +18,12 @@ from .session_manager import SessionManager
 
 app = FastAPI(title="Realtime Ditto Backend")
 sessions = SessionManager()
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("ditto.realtime")
+if not logger.handlers:
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logger.addHandler(stream_handler)
+logger.setLevel(logging.DEBUG)
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 if FRONTEND_DIR.exists():
@@ -47,9 +52,12 @@ async def root() -> HTMLResponse:
 @app.post("/sessions", response_model=SessionCreateResponse)
 async def create_session() -> SessionCreateResponse:
     try:
+        logger.info("HTTP create_session invoked")
         session_id = await sessions.create_session()
     except RuntimeError as exc:
+        logger.warning("create_session failed: %s", exc)
         raise HTTPException(status_code=429, detail=str(exc))
+    logger.info("Session %s created via HTTP", session_id)
     return SessionCreateResponse(session_id=session_id)
 
 
@@ -57,8 +65,10 @@ async def create_session() -> SessionCreateResponse:
 async def upload_audio_chunk(session_id: str, request: AudioChunkRequest) -> GenericResponse:
     try:
         pcm16 = base64.b64decode(request.audio_base64)
+        logger.debug("HTTP audio chunk for session %s len=%d", session_id, len(pcm16))
         await sessions.append_audio(session_id, pcm16)
     except KeyError:
+        logger.warning("upload_audio_chunk: session %s missing", session_id)
         raise HTTPException(status_code=404, detail="Session not found")
     return GenericResponse(status="queued")
 
@@ -66,8 +76,10 @@ async def upload_audio_chunk(session_id: str, request: AudioChunkRequest) -> Gen
 @app.post("/sessions/{session_id}/commit", response_model=GenericResponse)
 async def commit_session(session_id: str) -> GenericResponse:
     try:
+        logger.info("HTTP commit requested for session %s", session_id)
         await sessions.commit(session_id)
     except KeyError:
+        logger.warning("commit_session: session %s missing", session_id)
         raise HTTPException(status_code=404, detail="Session not found")
     return GenericResponse(status="committed")
 
@@ -83,6 +95,7 @@ async def _event_stream(session_id: str) -> AsyncGenerator[bytes, None]:
 
 @app.get("/sessions/{session_id}/events")
 async def session_events(session_id: str) -> StreamingResponse:
+    logger.info("HTTP events stream requested for session %s", session_id)
     generator = _event_stream(session_id)
     headers = {"Cache-Control": "no-cache"}
     return StreamingResponse(generator, media_type="text/event-stream", headers=headers)
@@ -90,6 +103,7 @@ async def session_events(session_id: str) -> StreamingResponse:
 
 @app.delete("/sessions/{session_id}", response_model=GenericResponse)
 async def delete_session(session_id: str) -> GenericResponse:
+    logger.info("HTTP delete session %s", session_id)
     await sessions.close_session(session_id)
     return GenericResponse(status="closed")
 
@@ -102,6 +116,7 @@ async def healthcheck() -> GenericResponse:
 @app.websocket("/ws/realtime")
 async def realtime_socket(websocket: WebSocket) -> None:
     await websocket.accept()
+    logger.info("WebSocket accepted from %s", getattr(websocket.client, "host", "unknown"))
     try:
         session_id = await sessions.create_session()
     except RuntimeError as exc:
@@ -122,25 +137,31 @@ async def realtime_socket(websocket: WebSocket) -> None:
         while True:
             message = await websocket.receive()
             if message["type"] == "websocket.disconnect":
+                logger.info("WebSocket disconnect from session %s", session_id)
                 break
 
             if "bytes" in message and message["bytes"] is not None:
+                logger.debug(
+                    "WebSocket binary message session=%s len=%d", session_id, len(message["bytes"]) or 0
+                )
                 await sessions.append_audio(session_id, message["bytes"])
                 continue
 
             if "text" in message and message["text"] is not None:
+                logger.debug("WebSocket text message session=%s payload=%s", session_id, message["text"])
                 should_close = await _handle_text_frame(session_id, message["text"], websocket)
                 if should_close:
                     break
                 continue
 
     except WebSocketDisconnect:
-        pass
+        logger.info("WebSocketDisconnect raised for session %s", session_id)
     finally:
         forward_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await forward_task
         await sessions.close_session(session_id)
+        logger.info("Realtime session %s cleaned up", session_id)
 
 
 async def _handle_text_frame(session_id: str, payload: str, websocket: WebSocket) -> bool:
@@ -157,6 +178,7 @@ async def _handle_text_frame(session_id: str, payload: str, websocket: WebSocket
         return False
 
     msg_type = message.get("type")
+    logger.debug("Handling text frame type=%s session=%s", msg_type, session_id)
     if msg_type == "audio":
         audio_b64 = message.get("audio")
         if not audio_b64:
@@ -183,19 +205,23 @@ async def _handle_text_frame(session_id: str, payload: str, websocket: WebSocket
         return False
 
     if msg_type == "commit":
+        logger.info("Commit received over WebSocket for session %s", session_id)
         instructions = message.get("instructions")
         await sessions.commit(session_id, instructions=instructions)
         return False
 
     if msg_type in {"response.create", "request_response"}:
+        logger.info("Explicit response request via WebSocket for session %s", session_id)
         instructions = message.get("instructions")
         await sessions.request_response(session_id, instructions=instructions)
         return False
 
     if msg_type == "close":
+        logger.info("Close command received for session %s", session_id)
         return True
 
     if msg_type == "ping":
+        logger.debug("Ping received from session %s", session_id)
         await websocket.send_json({"type": "pong"})
         return False
 
@@ -212,9 +238,11 @@ async def _handle_text_frame(session_id: str, payload: str, websocket: WebSocket
 async def _forward_events_to_websocket(websocket: WebSocket, session_id: str) -> None:
     try:
         async for event in sessions.stream_events(session_id):
+            logger.debug("Forwarding event to session %s: %s", session_id, event.get("type"))
             try:
                 await websocket.send_text(json.dumps(event))
             except WebSocketDisconnect:
+                logger.info("Forward loop detected disconnect for session %s", session_id)
                 break
     except asyncio.CancelledError:
         raise
