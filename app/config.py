@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pydantic import BaseSettings, Field
+
+try:  # Pydantic v2
+    from pydantic_settings import BaseSettings
+except ImportError:  # pragma: no cover - fallback for pydantic v1
+    from pydantic import BaseSettings  # type: ignore
+
+from pydantic import Field
 
 
 class Settings(BaseSettings):
